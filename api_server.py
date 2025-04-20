@@ -1,5 +1,3 @@
-# api_server.py
-
 from flask import Flask, request, jsonify
 import config
 from ai_clients.gemini import GeminiClient
@@ -12,26 +10,32 @@ ai_client = GeminiClient(
     api_key=config.GEMINI_API_KEY,
     model_name=config.GEMINI_MODEL_NAME
 )
+# api_server.py (backend update)
+
+# api_server.py (backend update)
 
 @app.route('/agent', methods=['POST'])
 def handle_task():
     try:
         data = request.get_json()
         task = data.get("task", "").strip()
-        language = data.get("language", "").strip().lower()
 
-        if not task or not language:
-            return jsonify({"error": "Both 'task' and 'language' are required."}), 400
+        if not task:
+            return jsonify({"error": "'task' is required."}), 400
 
-        # Generate code
-        code = ai_client.generate_code(task, language)
+        # Step 1: Refine the prompt
+        refined_prompt = ai_client.refine_prompt(task)
+
+        # Step 2: Generate code using the refined prompt (language detection handled internally)
+        code = ai_client.generate_code(refined_prompt)
         if not code:
             return jsonify({"error": "Code generation failed."}), 500
 
-        # Execute code
-        success, output = executor.execute_code(code, language)
+        # Step 3: Execute code
+        success, output = executor.execute_code(code,language=ai_client.detect_language(code))
 
         return jsonify({
+            "refined_prompt": refined_prompt,
             "code": code,
             "success": success,
             "output": output

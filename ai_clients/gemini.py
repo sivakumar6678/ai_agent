@@ -1,10 +1,7 @@
-# ai_clients/gemini.py
-"""
-Handles interaction with the Google Gemini API.
-"""
 import google.generativeai as genai
 import config
-import sys # For error messages
+import sys  # For error messages
+
 
 class GeminiClient:
     """Client for generating and fixing code using the Gemini API."""
@@ -19,7 +16,7 @@ class GeminiClient:
         """
         if not api_key or api_key == "YOUR_API_KEY_HERE":
             print(f"{config.EMOJI_ERROR} Error: Gemini API Key not configured in config.py or environment variables.", file=sys.stderr)
-            sys.exit(1) # Exit if API key is not set
+            sys.exit(1)  # Exit if API key is not set
 
         try:
             genai.configure(api_key=api_key)
@@ -33,61 +30,94 @@ class GeminiClient:
             print(f"{config.EMOJI_ERROR} Failed to initialize Gemini client: {e}", file=sys.stderr)
             sys.exit(1)
 
+    def refine_prompt(self, raw_prompt: str) -> str:
+        system_prompt = (
+            "You are a helpful AI assistant. Refine the following user prompt "
+            "to be more precise, clear, and suitable for code generation. "
+            "Do not generate code, only return the refined prompt."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": raw_prompt}
+        ]
+        try:
+            # Generate the refined prompt using generate_content method
+            response = self.model.generate_content(messages[1]['content'], generation_config=self.generation_config)
+            return response.text.strip()
+        except Exception as e:
+            print(f"{config.EMOJI_ERROR} Failed to refine prompt: {e}", file=sys.stderr)
+            return None
+
+
+    def detect_language(self, prompt: str) -> str:
+        """
+        Detect the programming language based on the task description.
+        This is a very simple heuristic; you can enhance it further.
+        """
+        prompt = prompt.lower()
+        if "def " in prompt or "import " in prompt:
+            return "python"
+        elif "public static void main" in prompt:
+            return "java"
+        elif "#include" in prompt:
+            return "c++"
+        elif "function " in prompt:
+            return "javascript"
+        return "python"  # Default fallback
+
     def _extract_code(self, text: str, language: str) -> str:
         """
         Extracts the code block from the Gemini response.
         Handles markdown code fences (```language ... ```) or raw code.
         """
         # Simple extraction: find the first code block or assume the whole response is code
-        # More robust parsing might be needed depending on model's verbosity
         code_block_marker = f"```{language}"
         fallback_marker = "```"
-        
+
         if code_block_marker in text:
             start = text.find(code_block_marker) + len(code_block_marker)
             end = text.find("```", start)
             code = text[start:end].strip()
         elif fallback_marker in text:
-             # Find the first ``` block
             start = text.find(fallback_marker) + len(fallback_marker)
-             # Skip potential language name if present (e.g., ```python)
             if text[start:].lstrip().startswith(language):
-                 start = text.find('\n', start) + 1 # Move past the language line
+                start = text.find('\n', start) + 1  # Move past the language line
             elif text[start] == '\n':
-                 start += 1 # Move past the newline after ```
-            
+                start += 1  # Move past the newline after ```
+
             end = text.find("```", start)
             if start != -1 and end != -1:
-                 code = text[start:end].strip()
-            else: # If no closing ``` found, assume rest is code
-                 code = text[start:].strip()
+                code = text[start:end].strip()
+            else:  # If no closing ``` found, assume rest is code
+                code = text[start:].strip()
 
         else:
             # If no markers, assume the whole response might be code (less reliable)
             code = text.strip()
-            
+
         # Basic cleanup for Java class names - ensure it contains 'class Main' if Java
         if language == "java" and "class Main" not in code:
-             print(f"{config.EMOJI_INFO} Warning: Generated Java code does not contain 'class Main'. Execution might fail.", file=sys.stderr)
-             # Attempt a basic wrap if it looks like just the method body was generated
-             if "public static void main" in code and not code.strip().startswith("import") and not code.strip().startswith("package"):
-                  print(f"{config.EMOJI_INFO} Attempting to wrap Java code in 'Main' class.")
-                  code = f"public class Main {{\n    {code}\n}}"
-
+            print(f"{config.EMOJI_INFO} Warning: Generated Java code does not contain 'class Main'. Execution might fail.", file=sys.stderr)
+            # Attempt a basic wrap if it looks like just the method body was generated
+            if "public static void main" in code and not code.strip().startswith("import") and not code.strip().startswith("package"):
+                print(f"{config.EMOJI_INFO} Attempting to wrap Java code in 'Main' class.")
+                code = f"public class Main {{\n    {code}\n}}"
 
         return code
 
-    def generate_code(self, prompt: str, language: str) -> str | None:
+    def generate_code(self, prompt: str) -> str | None:
         """
         Generates code based on the given prompt and language.
 
         Args:
             prompt: The user's request or task description.
-            language: The target programming language.
 
         Returns:
             The generated code as a string, or None if generation failed.
         """
+        # Step 1: Detect language based on prompt
+        language = self.detect_language(prompt)
+
         full_prompt = f"""
         Generate {language} code for the following task:
         Task: "{prompt}"
@@ -103,22 +133,17 @@ class GeminiClient:
                 full_prompt,
                 generation_config=self.generation_config
             )
-            # Check for safety ratings or blocks if necessary
-            # print(response.prompt_feedback) # For debugging safety issues
 
             if not response.candidates:
-                 print(f"{config.EMOJI_ERROR} Code generation failed. No response candidates.", file=sys.stderr)
-                 return None
-                 
+                print(f"{config.EMOJI_ERROR} Code generation failed. No response candidates.", file=sys.stderr)
+                return None
+
             generated_text = response.text
-            # print(f"Raw response:\n----\n{generated_text}\n----") # Debug raw output
-            
             extracted_code = self._extract_code(generated_text, language)
-            
+
             if not extracted_code:
-                 print(f"{config.EMOJI_ERROR} Code generation failed. Could not extract code from response.", file=sys.stderr)
-                 # print(f"--- Raw Response ---\n{generated_text}\n--- End Raw Response ---") # Show response if extraction fails
-                 return None
+                print(f"{config.EMOJI_ERROR} Code generation failed. Could not extract code from response.", file=sys.stderr)
+                return None
 
             return extracted_code
 
@@ -167,16 +192,15 @@ class GeminiClient:
                 generation_config=self.generation_config
             )
             if not response.candidates:
-                 print(f"{config.EMOJI_ERROR} Code fixing failed. No response candidates.", file=sys.stderr)
-                 return None
+                print(f"{config.EMOJI_ERROR} Code fixing failed. No response candidates.", file=sys.stderr)
+                return None
 
             generated_text = response.text
             extracted_code = self._extract_code(generated_text, language)
 
             if not extracted_code:
-                 print(f"{config.EMOJI_ERROR} Code fixing failed. Could not extract code from response.", file=sys.stderr)
-                 # print(f"--- Raw Response ---\n{generated_text}\n--- End Raw Response ---") # Show response if extraction fails
-                 return None
+                print(f"{config.EMOJI_ERROR} Code fixing failed. Could not extract code from response.", file=sys.stderr)
+                return None
 
             return extracted_code
 

@@ -99,52 +99,55 @@ def main():
             language = detect_or_ask_language(user_task)
             if language is None:
                 print(f"{config.EMOJI_STOP} Cannot proceed without a language.")
-                continue # Ask for a new task
+                continue  # Ask for a new task
+
+            # 2. Refine the prompt (send to Gemini API)
+            refined_prompt = ai_client.refine_task(user_task)  # Assuming GeminiClient has this method
+
+            # Show refined task and ask for approval
+            print(f"\n🔍 Refined Task:\n{refined_prompt}")
+            approval = input("\n✅ Do you want to proceed with this task? (y/n): ").lower()
+            if approval != 'y':
+                print("❌ Task cancelled by user.")
+                continue  # Ask for a new task
 
             # --- Generation and Execution Loop ---
             generated_code = None
             last_error = None
             attempt = 0
-            max_automatic_retries = 1 # Try to fix automatically once
+            max_automatic_retries = 1  # Try to fix automatically once
 
-            while True: # Loop for generation, execution, and retries
+            while True:  # Loop for generation, execution, and retries
                 attempt += 1
                 print(f"\n--- Attempt {attempt} ---")
 
-                # 2. Generate or Fix Code
-                if last_error and generated_code: # If retrying after an error
-                    generated_code = ai_client.fix_code(user_task, language, generated_code, last_error)
-                    last_error = None # Reset error for the new attempt
-                else: # Initial generation
-                    generated_code = ai_client.generate_code(user_task, language)
+                # 3. Generate or Fix Code
+                generated_code = ai_client.generate_code(refined_prompt, language)
 
                 if not generated_code:
                     print(f"{config.EMOJI_ERROR} Failed to get code from AI. Please try again or refine your task.")
-                    # Ask user if they want to retry the *generation* itself?
-                    # For now, just break the inner loop and ask for a new task.
-                    break # Break inner loop, go back to asking for task
+                    break  # Break inner loop, go back to asking for task
 
-                # 3. Show Code and Ask for Confirmation
+                # 4. Show Code and Ask for Confirmation
                 print(f"\n{config.EMOJI_CODE} Generated {language.capitalize()} Code:")
                 print("-" * 30)
-                # Add syntax highlighting here if desired (e.g., using rich or pygments)
                 print(generated_code)
                 print("-" * 30)
 
                 try:
                     confirm = input(f"{config.EMOJI_QUESTION} Execute this code? (y/n): ").strip().lower()
                 except KeyboardInterrupt:
-                     print(f"\n{config.EMOJI_STOP} Execution cancelled by user.")
-                     break # Break inner loop, go back to asking for task
+                    print(f"\n{config.EMOJI_STOP} Execution cancelled by user.")
+                    break  # Break inner loop, go back to asking for task
 
                 if confirm != 'y':
                     print(f"{config.EMOJI_INFO} Execution skipped.")
-                    break # Break inner loop, go back to asking for task
+                    break  # Break inner loop, go back to asking for task
 
-                # 4. Execute Code
+                # 5. Execute Code
                 success, output_or_error = executor.execute_code(generated_code, language)
 
-                # 5. Handle Result
+                # 6. Handle Result and Feedback
                 if success:
                     print(f"\n{config.EMOJI_SUCCESS} Execution successful!")
                     if output_or_error:
@@ -153,44 +156,37 @@ def main():
                         print("--------------")
                     else:
                         print("(No output)")
-                    break # Success! Break inner loop, go back to asking for task
+                    break  # Success! Break inner loop, go back to asking for task
                 else:
-                    # Execution failed
                     print(f"\n{config.EMOJI_ERROR} Execution failed!")
                     print("--- Error ---")
                     print(output_or_error)
                     print("-------------")
-                    last_error = output_or_error # Store error for fixing prompt
+                    
+                    feedback = input("\nWas the task successful? (y/n): ").lower()
 
-                    # 6. Retry Logic
-                    if attempt <= max_automatic_retries:
-                        print(f"{config.EMOJI_RETRY} Automatically retrying with fix...")
-                        # Continue the loop to call fix_code
+                    if feedback != 'y':
+                        reason = input("❌ What went wrong? Please describe: ")
+                        print("🔁 Refining and retrying...")
+                        refined_prompt = refine_task_with_reason(refined_prompt, reason)
+                        continue  # Retry the task with the refined prompt
                     else:
-                        # Automatic retries exhausted, ask user
-                        try:
-                             manual_retry = input(f"{config.EMOJI_QUESTION} Execution failed after automatic retry. Try fixing and running again? (y/n): ").strip().lower()
-                        except KeyboardInterrupt:
-                             print(f"\n{config.EMOJI_STOP} Retry cancelled by user.")
-                             break # Break inner loop
-
-                        if manual_retry == 'y':
-                             print(f"{config.EMOJI_RETRY} Retrying with fix...")
-                             # Continue the loop to call fix_code
-                        else:
-                             print(f"{config.EMOJI_STOP} Aborting execution attempts for this task.")
-                             break # Break inner loop, go back to asking for task
+                        break  # If successful, exit the loop
 
         except KeyboardInterrupt:
             print("\nExiting...")
             break
         except Exception as e:
             print(f"\n{config.EMOJI_ERROR} An unexpected error occurred: {e}", file=sys.stderr)
-            # Optionally add more detailed error logging here
             print("Restarting task input...")
 
-
     print("\n--- AI Code Agent Finished ---")
+
+def refine_task_with_reason(refined_prompt, reason):
+    # Add your logic to refine the prompt based on the reason
+    refined_prompt += f"\nIssue: {reason}"
+    return refined_prompt
+
 
 if __name__ == "__main__":
     # Create code directory if it doesn't exist
