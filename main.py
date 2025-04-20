@@ -1,52 +1,203 @@
 # main.py
-
-from ai_clients.gemini import get_gemini_response
-from executor import execute_code
-
-def generate_and_execute(task):
-    prompt = f"Generate Python code to: {task}"
-    print("\n🤖 Generating code from Gemini...")
-    code = get_gemini_response(prompt)
-
-    print("\n📜 Generated Code:\n")
-    print(code)
-
-    approval = input("\n✅ Do you want to execute this code? (yes/no): ").lower()
-    if approval == "yes":
-        output = execute_code(code)
-        if "Error" in output or "Traceback" in output:
-            print("\n💥 Execution Error:\n")
-            print(output)
-            retry = input("\n🔁 Do you want me to try fixing the code and re-run? (yes/no): ").lower()
-            if retry == "yes":
-                fix_prompt = f"""Fix the following Python code and correct the issue.
-
-Code:
-{code}
-
-Error:
-{output}
-
-Return only the corrected Python code without extra explanation.
 """
-                fixed_code = get_gemini_response(fix_prompt)
-                print("\n🛠️ Fixed Code:\n")
-                print(fixed_code)
-                final_output = execute_code(fixed_code)
-                print("\n⚙️ Final Execution Output:\n")
-                print(final_output)
-            else:
-                print("❌ Retry skipped.")
-        else:
-            print("\n⚙️ Execution Output:\n")
-            print(output)
+Main CLI interface for the AI Code Agent.
+Handles user interaction, language detection, code generation, execution, and retries.
+"""
+
+import sys
+import os
+import config
+from ai_clients.gemini import GeminiClient
+import executor # Assuming executor.py is in the same directory orPYTHONPATH
+
+def detect_or_ask_language(user_prompt: str) -> str | None:
+    """
+    Detects the programming language from the prompt or asks the user.
+
+    Args:
+        user_prompt: The user's input task description.
+
+    Returns:
+        The detected or chosen language (lowercase), or None if detection fails
+        and the user doesn't choose.
+    """
+    prompt_lower = user_prompt.lower()
+    detected_language = None
+
+    # Try keyword detection
+    for lang, details in config.SUPPORTED_LANGUAGES.items():
+        for keyword in details["keywords"]:
+            # Use word boundaries or specific phrases for better accuracy
+            if f" {keyword} " in prompt_lower or \
+               prompt_lower.startswith(f"{keyword} ") or \
+               prompt_lower.endswith(f" {keyword}") or \
+               prompt_lower == keyword or \
+               f"generate {keyword}" in prompt_lower or \
+               f"write {keyword}" in prompt_lower:
+                detected_language = lang
+                break
+        if detected_language:
+            break
+
+    if detected_language:
+        print(f"{config.EMOJI_INFO} Detected language: {detected_language.capitalize()}")
+        return detected_language
     else:
-        print("❌ Execution canceled.")
+        # Ask the user
+        print(f"{config.EMOJI_QUESTION} Could not automatically detect the language.")
+        print("Please choose a language:")
+        lang_list = list(config.SUPPORTED_LANGUAGES.keys())
+        for i, lang_name in enumerate(lang_list):
+            print(f"  {i + 1}. {lang_name.capitalize()}")
+
+        while True:
+            try:
+                choice = input(f"Enter number (1-{len(lang_list)}) or language name: ").strip().lower()
+                if choice.isdigit():
+                    index = int(choice) - 1
+                    if 0 <= index < len(lang_list):
+                        chosen_language = lang_list[index]
+                        print(f"{config.EMOJI_INFO} Using language: {chosen_language.capitalize()}")
+                        return chosen_language
+                    else:
+                        print(f"{config.EMOJI_ERROR} Invalid number. Please try again.")
+                elif choice in config.SUPPORTED_LANGUAGES:
+                     chosen_language = choice
+                     print(f"{config.EMOJI_INFO} Using language: {chosen_language.capitalize()}")
+                     return chosen_language
+                else:
+                     print(f"{config.EMOJI_ERROR} Invalid input. Please enter a valid number or language name from the list.")
+            except ValueError:
+                print(f"{config.EMOJI_ERROR} Invalid input. Please enter a number.")
+            except KeyboardInterrupt:
+                 print(f"\n{config.EMOJI_STOP} Language selection cancelled.")
+                 return None
+
 
 def main():
-    print("👋 Welcome to the Gemini AI Agent!")
-    task = input("📝 What task should I perform (e.g., 'Create a calculator')?\n> ")
-    generate_and_execute(task)
+    """Main function to run the CLI agent."""
+    print("--- AI Code Agent ---")
+
+    # Initialize Gemini Client
+    try:
+        ai_client = GeminiClient(
+            api_key=config.GEMINI_API_KEY,
+            model_name=config.GEMINI_MODEL_NAME
+        )
+    except SystemExit: # Catch exit from GeminiClient init if API key is missing
+        return # Exit gracefully
+
+    while True:
+        try:
+            user_task = input("\nEnter your coding task (or type 'quit' to exit): ").strip()
+            if user_task.lower() == 'quit':
+                break
+            if not user_task:
+                continue
+
+            # 1. Detect or Ask Language
+            language = detect_or_ask_language(user_task)
+            if language is None:
+                print(f"{config.EMOJI_STOP} Cannot proceed without a language.")
+                continue # Ask for a new task
+
+            # --- Generation and Execution Loop ---
+            generated_code = None
+            last_error = None
+            attempt = 0
+            max_automatic_retries = 1 # Try to fix automatically once
+
+            while True: # Loop for generation, execution, and retries
+                attempt += 1
+                print(f"\n--- Attempt {attempt} ---")
+
+                # 2. Generate or Fix Code
+                if last_error and generated_code: # If retrying after an error
+                    generated_code = ai_client.fix_code(user_task, language, generated_code, last_error)
+                    last_error = None # Reset error for the new attempt
+                else: # Initial generation
+                    generated_code = ai_client.generate_code(user_task, language)
+
+                if not generated_code:
+                    print(f"{config.EMOJI_ERROR} Failed to get code from AI. Please try again or refine your task.")
+                    # Ask user if they want to retry the *generation* itself?
+                    # For now, just break the inner loop and ask for a new task.
+                    break # Break inner loop, go back to asking for task
+
+                # 3. Show Code and Ask for Confirmation
+                print(f"\n{config.EMOJI_CODE} Generated {language.capitalize()} Code:")
+                print("-" * 30)
+                # Add syntax highlighting here if desired (e.g., using rich or pygments)
+                print(generated_code)
+                print("-" * 30)
+
+                try:
+                    confirm = input(f"{config.EMOJI_QUESTION} Execute this code? (y/n): ").strip().lower()
+                except KeyboardInterrupt:
+                     print(f"\n{config.EMOJI_STOP} Execution cancelled by user.")
+                     break # Break inner loop, go back to asking for task
+
+                if confirm != 'y':
+                    print(f"{config.EMOJI_INFO} Execution skipped.")
+                    break # Break inner loop, go back to asking for task
+
+                # 4. Execute Code
+                success, output_or_error = executor.execute_code(generated_code, language)
+
+                # 5. Handle Result
+                if success:
+                    print(f"\n{config.EMOJI_SUCCESS} Execution successful!")
+                    if output_or_error:
+                        print("--- Output ---")
+                        print(output_or_error)
+                        print("--------------")
+                    else:
+                        print("(No output)")
+                    break # Success! Break inner loop, go back to asking for task
+                else:
+                    # Execution failed
+                    print(f"\n{config.EMOJI_ERROR} Execution failed!")
+                    print("--- Error ---")
+                    print(output_or_error)
+                    print("-------------")
+                    last_error = output_or_error # Store error for fixing prompt
+
+                    # 6. Retry Logic
+                    if attempt <= max_automatic_retries:
+                        print(f"{config.EMOJI_RETRY} Automatically retrying with fix...")
+                        # Continue the loop to call fix_code
+                    else:
+                        # Automatic retries exhausted, ask user
+                        try:
+                             manual_retry = input(f"{config.EMOJI_QUESTION} Execution failed after automatic retry. Try fixing and running again? (y/n): ").strip().lower()
+                        except KeyboardInterrupt:
+                             print(f"\n{config.EMOJI_STOP} Retry cancelled by user.")
+                             break # Break inner loop
+
+                        if manual_retry == 'y':
+                             print(f"{config.EMOJI_RETRY} Retrying with fix...")
+                             # Continue the loop to call fix_code
+                        else:
+                             print(f"{config.EMOJI_STOP} Aborting execution attempts for this task.")
+                             break # Break inner loop, go back to asking for task
+
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            break
+        except Exception as e:
+            print(f"\n{config.EMOJI_ERROR} An unexpected error occurred: {e}", file=sys.stderr)
+            # Optionally add more detailed error logging here
+            print("Restarting task input...")
+
+
+    print("\n--- AI Code Agent Finished ---")
 
 if __name__ == "__main__":
+    # Create code directory if it doesn't exist
+    try:
+        os.makedirs(config.CODE_DIR, exist_ok=True)
+    except OSError as e:
+         print(f"{config.EMOJI_ERROR} Could not create code directory '{config.CODE_DIR}': {e}", file=sys.stderr)
+         sys.exit(1)
+         
     main()
